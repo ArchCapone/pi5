@@ -1,0 +1,149 @@
+ #!/bin/bash
+  # Pi 5 Travel Router Setup with ProtonVPN and Throttling Detection
+  # Usage: curl -sSL 
+  https://raw.githubusercontent.com/your-repo/pi-setup/main/setup.sh | bash
+
+  set -e
+
+  echo "🚀 Pi 5 Travel Router Setup Starting..."
+
+  # Update system
+  echo "📦 Updating system..."
+  sudo apt update && sudo apt upgrade -y
+
+  # Install required packages
+  echo "🛠 Installing packages..."
+  sudo apt install -y \
+      hostapd \
+      dnsmasq \
+      iptables-persistent \
+      bridge-utils \
+      curl \
+      wget \
+      speedtest-cli \
+      iperf3 \
+      tcpdump \
+      nmap \
+      git \
+      python3-pip \
+      openvpn \
+      wireguard
+
+  # Install RaspAP (travel router software)
+  echo "📡 Installing RaspAP..."
+  curl -sL https://install.raspap.com | bash -s -- --yes
+
+  # Configure ProtonVPN
+  echo "🔐 Setting up ProtonVPN..."
+  wget -O protonvpn-stable-release_1.0.3-2_all.deb https://repo.protonvpn.com/
+  debian/dists/stable/main/binary-all/protonvpn-stable-release_1.0.3-2_all.deb
+  sudo dpkg -i protonvpn-stable-release_1.0.3-2_all.deb
+  sudo apt update
+  sudo apt install -y protonvpn-cli
+
+  # Create throttling detection script
+  echo "🔍 Creating throttling detection..."
+  cat > /home/pi/throttle-detector.py << 'EOF'
+  #!/usr/bin/env python3
+  import subprocess
+  import time
+  import json
+  import logging
+  from datetime import datetime
+
+  logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+
+  class ThrottleDetector:
+      def __init__(self):
+          self.baseline_speed = None
+          self.vpn_speed = None
+
+      def run_speedtest(self):
+          """Run speedtest and return results"""
+          try:
+              result = subprocess.run(['speedtest-cli', '--json'],
+                                    capture_output=True, text=True)
+              return json.loads(result.stdout)
+          except Exception as e:
+              logging.error(f"Speedtest failed: {e}")
+              return None
+
+      def detect_throttling(self):
+          """Detect if connection is being throttled"""
+          # Test without VPN
+          logging.info("Testing speed without VPN...")
+          self.baseline_speed = self.run_speedtest()
+
+          # Connect to VPN
+          logging.info("Connecting to ProtonVPN...")
+          subprocess.run(['protonvpn-cli', 'c', '--fastest'], check=True)
+          time.sleep(10)
+
+          # Test with VPN
+          logging.info("Testing speed with VPN...")
+          self.vpn_speed = self.run_speedtest()
+
+          # Disconnect VPN
+          subprocess.run(['protonvpn-cli', 'd'], check=True)
+
+          # Analyze results
+          if self.baseline_speed and self.vpn_speed:
+              baseline_down = self.baseline_speed['download'] / 1000000  # 
+  Mbps
+              vpn_down = self.vpn_speed['download'] / 1000000  # Mbps
+
+              throttle_ratio = vpn_down / baseline_down if baseline_down > 0
+  else 0
+
+              logging.info(f"Baseline speed: {baseline_down:.2f} Mbps")
+              logging.info(f"VPN speed: {vpn_down:.2f} Mbps")
+              logging.info(f"Throttle ratio: {throttle_ratio:.2f}")
+
+              if throttle_ratio < 0.7:  # 30% speed reduction
+                  logging.warning("🚨 VPN throttling detected!")
+                  return True
+              else:
+                  logging.info("✅ No significant throttling detected")
+                  return False
+
+          return False
+
+  if __name__ == "__main__":
+      detector = ThrottleDetector()
+      detector.detect_throttling()
+  EOF
+
+  chmod +x /home/pi/throttle-detector.py
+
+  # Create startup script
+  echo "🔧 Creating startup configuration..."
+  cat > /home/pi/travel-router-start.sh << 'EOF'
+  #!/bin/bash
+  # Travel Router Startup Script
+
+  echo "🚀 Starting Travel Router..."
+
+  # Check ProtonVPN status
+  if ! protonvpn-cli status | grep -q "Connected"; then
+      echo "🔐 Connecting to ProtonVPN..."
+      protonvpn-cli c --fastest
+  fi
+
+  # Start throttling detection (runs in background)
+  nohup python3 /home/pi/throttle-detector.py > /home/pi/throttle-log.txt 2>&1
+   &
+
+  echo "✅ Travel Router setup complete!"
+  echo "📊 Check throttling log: tail -f /home/pi/throttle-log.txt"
+  echo "🌐 RaspAP interface: http://$(hostname -I | cut -d' ' -f1)"
+  EOF
+
+  chmod +x /home/pi/travel-router-start.sh
+
+  echo "🎉 Setup complete!"
+  echo ""
+  echo "Next steps:"
+  echo "1. Configure ProtonVPN: protonvpn-cli login"
+  echo "2. Access RaspAP: http://$(hostname -I | cut -d' ' -f1)"
+  echo "3. Run travel router: ./travel-router-start.sh"
+  echo "4. Monitor throttling: tail -f /home/pi/throttle-log.txt"
